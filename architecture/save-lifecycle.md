@@ -1,0 +1,7 @@
+# Editor save and shutdown lifecycle
+
+Debounced title/content saves carry a renderer session and a per-document, per-field revision. A new edit increments its revision immediately so a late response cannot replace a more recent draft. The main process rejects retired renderer sessions and older revisions. Session initialization completes before the React editor mounts; renderer reload starts a fresh session.
+
+The application tracks saves beyond component lifetime. Closing a tab leaves its in-flight write in the application shutdown barrier. Shutdown flushes all mounted editors, awaits outstanding writes, and repeats if edits arrived while waiting. Failed writes keep shutdown blocked until a successful replacement save for that field. The main process bounds each window's confirmation to ten seconds and only closes the database after every window confirms. Missing hooks, rejected saves, and timeouts retain the window/database and show an error.
+
+Evidence: unit coverage includes reversed revisions, renderer session replacement, unmounted pending/failing saves, and edits during flush. Packaged macOS Electron tests exercise immediate quit/reopen, slow confirmation, failure/timeout refusal, and first save after renderer reload. Failure injection validates the application boundary; it is not a physical disk-full test. Windows/Linux native acceptance and the full existing E2E suite remain separate gates.
