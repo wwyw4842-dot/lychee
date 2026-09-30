@@ -68,7 +68,7 @@ describe('IPC Error Propagation', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ────────────────────────────────────────────────────────
