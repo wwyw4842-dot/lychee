@@ -20,6 +20,85 @@ function hydrateRows(rows: RawDocumentRow[]): DocumentRow[] {
   return rows.map(hydrateRow);
 }
 
+const maxTreeDepth = 1000;
+
+type TreeNode = { parentId: string | null; deletedAt: string | null };
+
+function readTreeNode(db: ReturnType<typeof getDb>, id: string): TreeNode | undefined {
+  return db
+    .prepare(`SELECT parentId, deletedAt FROM documents WHERE id = ?`)
+    .get(id) as TreeNode | undefined;
+}
+
+/** Reject a parent assignment that would cycle, dangle, or hang off the trash. */
+function assertValidParent(
+  db: ReturnType<typeof getDb>,
+  documentId: string | null,
+  newParentId: string | null,
+): void {
+  if (newParentId == null) return;
+  if (documentId != null && newParentId === documentId) {
+    throw new Error('Cannot move document into itself');
+  }
+
+  const seen = new Set<string>();
+  let current: string | null = newParentId;
+  for (let depth = 0; current != null; depth += 1) {
+    if (documentId != null && current === documentId) {
+      throw new Error('Cannot move document into its descendant');
+    }
+    if (seen.has(current)) {
+      throw new Error(`Document tree contains a cycle at ${current}`);
+    }
+    if (depth >= maxTreeDepth) {
+      throw new Error('Document tree is too deep');
+    }
+    seen.add(current);
+    const node = readTreeNode(db, current);
+    if (!node) {
+      if (current === newParentId) {
+        throw new Error(`Target parent not found: ${newParentId}`);
+      }
+      throw new Error(`Document tree is missing ancestor ${current}`);
+    }
+    if (node.deletedAt) {
+      throw new Error('Cannot move document under a trashed parent');
+    }
+    current = node.parentId;
+  }
+}
+
+/** Walk parentId links. A repeated id is a stored cycle and stops the walk. */
+function collectRelatedIds(
+  db: ReturnType<typeof getDb>,
+  rootId: string,
+  mode: 'all' | 'trashed',
+): string[] {
+  const ids = [rootId];
+  const seen = new Set<string>([rootId]);
+  let frontier = [rootId];
+  for (let depth = 0; frontier.length > 0; depth += 1) {
+    if (depth >= maxTreeDepth) throw new Error('Document tree is too deep');
+    const next: string[] = [];
+    for (const id of frontier) {
+      const children = db
+        .prepare(`SELECT id, deletedAt FROM documents WHERE parentId = ?`)
+        .all(id) as { id: string; deletedAt: string | null }[];
+      for (const child of children) {
+        if (seen.has(child.id)) {
+          throw new Error(`Document tree contains a cycle at ${child.id}`);
+        }
+        if (mode === 'trashed' && !child.deletedAt) continue;
+        seen.add(child.id);
+        ids.push(child.id);
+        next.push(child.id);
+      }
+    }
+    frontier = next;
+  }
+  return ids;
+}
+
 export function listDocuments(params: {
   limit?: number;
   offset?: number;
@@ -84,13 +163,6 @@ export function createDocument(input: {
 
   const createdAt = nowIso();
   const parentId = input.parentId ?? null;
-
-  // Get next sortOrder for siblings (new docs go to the top, so sortOrder = 0, and shift others down)
-  db.prepare(
-    `UPDATE documents SET sortOrder = sortOrder + 1
-     WHERE parentId IS ? AND deletedAt IS NULL`,
-  ).run(parentId);
-
   const doc: DocumentRow = {
     id: randomUUID(),
     title: (() => {
@@ -107,23 +179,32 @@ export function createDocument(input: {
     metadata: {},
   };
 
-  db.prepare(
-    `INSERT INTO documents (id, title, content, createdAt, updatedAt, parentId, emoji, deletedAt, sortOrder, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    doc.id,
-    doc.title,
-    doc.content,
-    doc.createdAt,
-    doc.updatedAt,
-    doc.parentId,
-    doc.emoji,
-    doc.deletedAt,
-    doc.sortOrder,
-    JSON.stringify(doc.metadata),
-  );
+  const insert = db.transaction(() => {
+    assertValidParent(db, null, parentId);
+    // New docs go to the top, so sortOrder = 0, and shift others down.
+    db.prepare(
+      `UPDATE documents SET sortOrder = sortOrder + 1
+       WHERE parentId IS ? AND deletedAt IS NULL`,
+    ).run(parentId);
+    db.prepare(
+      `INSERT INTO documents (id, title, content, createdAt, updatedAt, parentId, emoji, deletedAt, sortOrder, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      doc.id,
+      doc.title,
+      doc.content,
+      doc.createdAt,
+      doc.updatedAt,
+      doc.parentId,
+      doc.emoji,
+      doc.deletedAt,
+      doc.sortOrder,
+      JSON.stringify(doc.metadata),
+    );
+    return doc;
+  });
 
-  return doc;
+  return insert.immediate();
 }
 
 export function updateDocument(
@@ -137,39 +218,48 @@ export function updateDocument(
   },
 ): DocumentRow {
   const db = getDb();
-  const existing = getDocumentById(id);
-  if (!existing) {
-    throw new Error(`Document not found: ${id}`);
-  }
+  const apply = db.transaction(() => {
+    const existing = getDocumentById(id);
+    if (!existing) {
+      throw new Error(`Document not found: ${id}`);
+    }
 
-  const next: DocumentRow = {
-    ...existing,
-    title:
-      patch.title === undefined ? existing.title : patch.title.trim(),
-    content: patch.content === undefined ? existing.content : patch.content,
-    parentId:
-      patch.parentId === undefined ? existing.parentId : patch.parentId ?? null,
-    emoji: patch.emoji === undefined ? existing.emoji : patch.emoji ?? null,
-    metadata: patch.metadata ? { ...existing.metadata, ...patch.metadata } : existing.metadata,
-    deletedAt: existing.deletedAt,
-    updatedAt: nowIso(),
-  };
+    const next: DocumentRow = {
+      ...existing,
+      title:
+        patch.title === undefined ? existing.title : patch.title.trim(),
+      content: patch.content === undefined ? existing.content : patch.content,
+      parentId:
+        patch.parentId === undefined ? existing.parentId : patch.parentId ?? null,
+      emoji: patch.emoji === undefined ? existing.emoji : patch.emoji ?? null,
+      metadata: patch.metadata ? { ...existing.metadata, ...patch.metadata } : existing.metadata,
+      deletedAt: existing.deletedAt,
+      updatedAt: nowIso(),
+    };
 
-  db.prepare(
-    `UPDATE documents
-     SET title = ?, content = ?, updatedAt = ?, parentId = ?, emoji = ?, metadata = ?
-     WHERE id = ?`,
-  ).run(
-    next.title,
-    next.content,
-    next.updatedAt,
-    next.parentId,
-    next.emoji,
-    JSON.stringify(next.metadata),
-    id,
-  );
+    if (next.parentId !== existing.parentId) {
+      if (existing.deletedAt) throw new Error('Cannot move a trashed document');
+      assertValidParent(db, id, next.parentId);
+    }
 
-  return next;
+    db.prepare(
+      `UPDATE documents
+       SET title = ?, content = ?, updatedAt = ?, parentId = ?, emoji = ?, metadata = ?
+       WHERE id = ?`,
+    ).run(
+      next.title,
+      next.content,
+      next.updatedAt,
+      next.parentId,
+      next.emoji,
+      JSON.stringify(next.metadata),
+      id,
+    );
+
+    return next;
+  });
+
+  return apply.immediate();
 }
 
 export function deleteDocument(id: string): void {
@@ -186,38 +276,21 @@ export function trashDocument(id: string): { document: DocumentRow; trashedIds: 
   }
   const deletedAt = nowIso();
 
-  // Get id + all descendant ids before updating
-  const trashedRows = db
-    .prepare(
-      `WITH RECURSIVE descendants(descId) AS (
-         SELECT ? AS descId
-         UNION ALL
-         SELECT d.id FROM documents d INNER JOIN descendants dec ON d.parentId = dec.descId
-       )
-       SELECT descId FROM descendants`,
-    )
-    .all(id) as { descId: string }[];
-  const trashedIds = trashedRows.map((r) => r.descId);
-
   const tx = db.transaction(() => {
-    // Trash this document and all descendants
+    const trashedIds = collectRelatedIds(db, id, 'all');
+    const placeholders = trashedIds.map(() => '?').join(',');
     db.prepare(
-      `WITH RECURSIVE descendants(descId) AS (
-         SELECT id FROM documents WHERE parentId = ?
-         UNION ALL
-         SELECT d.id FROM documents d INNER JOIN descendants dec ON d.parentId = dec.descId
-       )
-       UPDATE documents SET deletedAt = ?, updatedAt = ?
-       WHERE id = ? OR id IN (SELECT descId FROM descendants)`,
-    ).run(id, deletedAt, deletedAt, id);
+      `UPDATE documents SET deletedAt = ?, updatedAt = ? WHERE id IN (${placeholders})`,
+    ).run(deletedAt, deletedAt, ...trashedIds);
 
     // Close the gap in siblings' sortOrder (only for the top-level trashed doc, not descendants)
     db.prepare(
       `UPDATE documents SET sortOrder = sortOrder - 1
        WHERE parentId IS ? AND sortOrder > ? AND deletedAt IS NULL`,
     ).run(existing.parentId, existing.sortOrder);
+    return trashedIds;
   });
-  tx();
+  const trashedIds = tx.immediate();
 
   return {
     document: { ...existing, deletedAt, updatedAt: deletedAt },
@@ -237,18 +310,7 @@ export function restoreDocument(id: string): { document: DocumentRow; restoredId
   }
   const updatedAt = nowIso();
 
-  // Restore this doc and all trashed descendants (recursive: same parent chain, all currently trashed)
-  const tree = db
-    .prepare(
-      `WITH RECURSIVE tree(id) AS (
-         SELECT ? AS id WHERE (SELECT deletedAt FROM documents WHERE id = ?) IS NOT NULL
-         UNION ALL
-         SELECT d.id FROM documents d INNER JOIN tree t ON d.parentId = t.id WHERE d.deletedAt IS NOT NULL
-       )
-       SELECT id FROM tree WHERE id IS NOT NULL`,
-    )
-    .all(id, id) as { id: string }[];
-  const restoredIds = tree.map((r) => r.id);
+  const restoredIds = collectRelatedIds(db, id, 'trashed');
 
   if (restoredIds.length > 0) {
     const tx = db.transaction(() => {
@@ -289,35 +351,10 @@ export function permanentDeleteDocument(id: string): { deletedIds: string[] } {
   if (!existing) {
     throw new Error(`Document not found: ${id}`);
   }
-  const tree = db
-    .prepare(
-      `WITH RECURSIVE tree(id) AS (
-         SELECT ?
-         UNION ALL
-         SELECT d.id FROM documents d INNER JOIN tree t ON d.parentId = t.id
-       )
-       SELECT id FROM tree`,
-    )
-    .all(id) as { id: string }[];
-  const deletedIds = tree.map((r) => r.id);
+  const deletedIds = collectRelatedIds(db, id, 'all');
   const placeholders = deletedIds.map(() => '?').join(',');
   db.prepare(`DELETE FROM documents WHERE id IN (${placeholders})`).run(...deletedIds);
   return { deletedIds };
-}
-
-/** Get all descendant IDs of a document (for circular reference check). */
-function getDescendantIds(db: ReturnType<typeof getDb>, id: string): Set<string> {
-  const rows = db
-    .prepare(
-      `WITH RECURSIVE descendants(id) AS (
-         SELECT id FROM documents WHERE parentId = ?
-         UNION ALL
-         SELECT d.id FROM documents d INNER JOIN descendants dec ON d.parentId = dec.id
-       )
-       SELECT id FROM descendants`,
-    )
-    .all(id) as { id: string }[];
-  return new Set(rows.map((r) => r.id));
 }
 
 /**
@@ -337,43 +374,8 @@ export function moveDocument(
     throw new Error(`Document not found: ${id}`);
   }
 
-  // Reject moving a trashed document — restore it first
   if (existing.deletedAt) {
     throw new Error('Cannot move a trashed document');
-  }
-
-  // Prevent moving to self
-  if (newParentId === id) {
-    throw new Error('Cannot move document into itself');
-  }
-
-  // Validate target parent exists and entire ancestor chain is not trashed
-  if (newParentId !== null) {
-    const parent = getDocumentById(newParentId);
-    if (!parent) {
-      throw new Error(`Target parent not found: ${newParentId}`);
-    }
-    if (parent.deletedAt) {
-      throw new Error('Cannot move document under a trashed parent');
-    }
-    // Walk up the ancestor chain to detect zombie nodes (active node under a trashed ancestor)
-    let ancestorId = parent.parentId;
-    while (ancestorId !== null) {
-      const ancestor = getDocumentById(ancestorId);
-      if (!ancestor) break;
-      if (ancestor.deletedAt) {
-        throw new Error('Cannot move document under a trashed parent');
-      }
-      ancestorId = ancestor.parentId;
-    }
-  }
-
-  // Prevent circular reference (moving to a descendant)
-  if (newParentId !== null) {
-    const descendants = getDescendantIds(db, id);
-    if (descendants.has(newParentId)) {
-      throw new Error('Cannot move document into its descendant');
-    }
   }
 
   // Clamp sortOrder to valid range
@@ -388,6 +390,7 @@ export function moveDocument(
   const changingParent = oldParentId !== newParentId;
 
   const tx = db.transaction(() => {
+    assertValidParent(db, id, newParentId);
     if (changingParent) {
       // Moving to different parent
       // 1. Close gap in old parent's children
@@ -436,7 +439,7 @@ export function moveDocument(
     }
   });
 
-  tx();
+  tx.immediate();
 
   return getDocumentById(id)!;
 }

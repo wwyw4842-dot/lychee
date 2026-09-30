@@ -194,33 +194,23 @@ describe('Document Repository — Update Edge Cases', () => {
       expect(uniqueOrders.size).not.toBe(newOrders.length); // BUG: duplicate sortOrders
     });
 
-    it('BUG: updateDocument with parentId allows circular reference', () => {
+    it('updateDocument rejects a parent that is already a descendant', () => {
       const parent = createDocument({ title: 'Parent' });
       const child = createDocument({ title: 'Child', parentId: parent.id });
 
-      // moveDocument would throw 'Cannot move document into its descendant'
-      // but updateDocument has no such check
-      expect(() => {
-        updateDocument(parent.id, { parentId: child.id });
-      }).not.toThrow(); // BUG: this should throw but doesn't
-
-      // Verify the circular reference was created
-      const parentDoc = getDocumentById(parent.id)!;
-      const childDoc = getDocumentById(child.id)!;
-      expect(parentDoc.parentId).toBe(child.id);
-      expect(childDoc.parentId).toBe(parent.id); // circular!
+      expect(() => updateDocument(parent.id, { parentId: child.id })).toThrow(
+        'Cannot move document into its descendant',
+      );
+      expect(getDocumentById(parent.id)!.parentId).toBeNull();
+      expect(getDocumentById(child.id)!.parentId).toBe(parent.id);
     });
 
-    it('BUG: updateDocument allows self-referencing parentId', () => {
+    it('updateDocument rejects a self parent', () => {
       const doc = createDocument({ title: 'Doc' });
 
-      // moveDocument would throw 'Cannot move document into itself'
-      // but updateDocument has no such check
-      expect(() => {
-        updateDocument(doc.id, { parentId: doc.id });
-      }).not.toThrow(); // BUG: this should throw but doesn't
-
-      const updated = getDocumentById(doc.id)!;
-      expect(updated.parentId).toBe(doc.id); // self-reference!
+      expect(() => updateDocument(doc.id, { parentId: doc.id })).toThrow(
+        'Cannot move document into itself',
+      );
+      expect(getDocumentById(doc.id)!.parentId).toBeNull();
     });
 });
