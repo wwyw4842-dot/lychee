@@ -321,9 +321,6 @@ export function LexicalEditor({
           onSaved?: (doc: DocumentRow) => void,
         ) => {
           const json = editorState.toJSON();
-          json.root.children = (json.root as any).children.filter(
-            (child: any) => child.type !== "loading-placeholder",
-          );
           const content = JSON.stringify(json);
           const pending = window.lychee
             .invoke("documents.update", { id, content, saveRevision, saveSession, saveField: "content" })
