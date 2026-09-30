@@ -1,4 +1,4 @@
-import { ipcMain, shell } from 'electron';
+import { ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import type { IpcContract, IpcChannel } from '../shared/ipc-types';
 import {
   createDocument,
@@ -16,13 +16,17 @@ import { saveImage, getImagePath, deleteImage, downloadImage } from './repos/ima
 import { resolveUrl } from './repos/url-resolver';
 import { fetchUrlMetadata } from './repos/url-metadata';
 import { getSetting, setSetting, getAllSettings } from './repos/settings';
+import { acceptSaveRevision, startSaveSession, isSaveSessionCurrent } from './save-revision';
 
 type Handler<C extends IpcChannel> = (
   payload: IpcContract[C]['req'],
+  event: IpcMainInvokeEvent,
 ) => Promise<IpcContract[C]['res']> | IpcContract[C]['res'];
 
 function handle<C extends IpcChannel>(channel: C, fn: Handler<C>) {
-  ipcMain.handle(channel, async (_event, payload: IpcContract[C]['req']) => fn(payload));
+  ipcMain.handle(channel, async (event, payload: IpcContract[C]['req']) => {
+    return fn(payload, event);
+  });
 }
 
 function validateContentJson(content: string): void {
@@ -42,6 +46,10 @@ function validateContentJson(content: string): void {
 }
 
 export function registerIpcHandlers() {
+  handle("save.startSession", (payload, event) => {
+    startSaveSession(event.sender.id, payload.session);
+    return { ok: true };
+  });
   handle('documents.list', (payload) => ({
     documents: listDocuments(payload),
   }));
@@ -57,10 +65,20 @@ export function registerIpcHandlers() {
     return { document: createDocument(payload) };
   });
 
-  handle('documents.update', (payload) => {
+  handle('documents.update', (payload, event) => {
     if (!payload.id) throw new Error('Missing required field: id');
     if (typeof payload.content === 'string' && payload.content !== '') {
       validateContentJson(payload.content);
+    }
+    if (payload.saveField && (!payload.saveSession || !isSaveSessionCurrent(event.sender.id, payload.saveSession))) {
+      throw new Error("Stale save session");
+    }
+    if (
+      payload.saveField &&
+      payload.saveRevision != null &&
+      !acceptSaveRevision(payload.id, payload.saveField, payload.saveRevision, payload.saveSession)
+    ) {
+      return { document: getDocumentById(payload.id) };
     }
     return { document: updateDocument(payload.id, payload) };
   });
