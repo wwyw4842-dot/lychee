@@ -65,7 +65,7 @@ describe('IPC — Interleaving Resilience', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   it('invalid update payloads do not poison subsequent valid updates', async () => {
