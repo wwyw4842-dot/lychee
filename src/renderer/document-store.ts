@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { discardDocumentSaves } from './save-flush';
 import type { DocumentRow } from '../shared/documents';
 import { useSearchHighlightStore } from './search-highlight-store';
 
@@ -289,6 +290,7 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
     try {
       set({ error: null });
       const { deletedIds } = await window.lychee.invoke('documents.permanentDelete', { id });
+      discardDocumentSaves(deletedIds);
       const deletedSet = new Set(deletedIds);
       set((state) => {
         const nextTrashed = state.trashedDocuments.filter((d) => !deletedSet.has(d.id));
