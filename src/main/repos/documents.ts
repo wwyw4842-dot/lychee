@@ -242,6 +242,18 @@ export function updateDocument(
       assertValidParent(db, id, next.parentId);
     }
 
+    // Preserve original serialized content before the editor replaces legacy nodes.
+    // The backup participates in the same transaction: failure preserves the note.
+    if (patch.content !== undefined && patch.content !== existing.content &&
+        /"type"\s*:\s*"(?:code-snippet|executable-code-block|loading-placeholder)"/.test(existing.content)) {
+      db.exec(`CREATE TABLE IF NOT EXISTS document_content_backups (
+        documentId TEXT NOT NULL, content TEXT NOT NULL, createdAt TEXT NOT NULL,
+        PRIMARY KEY (documentId, content)
+      )`);
+      db.prepare('INSERT OR IGNORE INTO document_content_backups (documentId, content, createdAt) VALUES (?, ?, ?)')
+        .run(id, existing.content, nowIso());
+    }
+
     db.prepare(
       `UPDATE documents
        SET title = ?, content = ?, updatedAt = ?, parentId = ?, emoji = ?, metadata = ?

@@ -4,6 +4,8 @@ import { JSX, useCallback, useEffect, useRef, useState } from "react"
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext"
 import {
   $createNodeSelection,
+  $createParagraphNode,
+  $createTextNode,
   $getNodeByKey,
   $isTextNode,
   $setSelection,
@@ -13,7 +15,7 @@ import {
   type LexicalNode,
   type NodeKey,
 } from "lexical"
-import { $isAutoLinkNode, $isLinkNode } from "@lexical/link"
+import { $createLinkNode, $isAutoLinkNode, $isLinkNode } from "@lexical/link"
 import { $findCellNode } from "@lexical/table"
 import { ExternalLink, Bookmark, Code } from "lucide-react"
 
@@ -21,7 +23,7 @@ import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { onToolbarExclusive } from "@/components/lexical-editor"
 import { $createImageNode } from "@/components/editor/nodes/image-node"
 import { $createBookmarkNode } from "@/components/editor/nodes/bookmark-node"
-import { $createLoadingPlaceholderNode } from "@/components/editor/nodes/loading-placeholder-node"
+import { $createLoadingPlaceholderNode, $isLoadingPlaceholderNode } from "@/components/editor/nodes/loading-placeholder-node"
 import { $createYouTubeNode } from "@/components/editor/nodes/youtube-node"
 import type { ResolvedUrlResult } from "@/shared/ipc-types"
 
@@ -240,9 +242,10 @@ export function LinkClickPlugin(): JSX.Element | null {
 
     snapshotAndFocusLink(linkNodeKey)
 
+    const requestId = crypto.randomUUID()
     let placeholderKey: string | undefined
     editor.update(() => {
-      const placeholder = $createLoadingPlaceholderNode("Embedding…")
+      const placeholder = $createLoadingPlaceholderNode("Embedding…", url, requestId)
       replaceLink(linkNodeKey, placeholder)
       placeholderKey = placeholder.getKey()
     }, { tag: HISTORY_PUSH_TAG })
@@ -254,7 +257,7 @@ export function LinkClickPlugin(): JSX.Element | null {
 
       editor.update(() => {
         const ph = placeholderKey ? $getNodeByKey(placeholderKey) : null
-        if (!ph) return
+        if (!$isLoadingPlaceholderNode(ph) || ph.__requestId !== requestId || ph.__sourceUrl !== url) return
 
         let replacement: LexicalNode | null = null
 
@@ -280,7 +283,7 @@ export function LinkClickPlugin(): JSX.Element | null {
             })
             break
           default:
-            ph.remove()
+            ph.replace($createParagraphNode().append($createLinkNode(url).append($createTextNode(url))))
             return
         }
 
@@ -293,7 +296,9 @@ export function LinkClickPlugin(): JSX.Element | null {
       console.error("Failed to embed URL:", err)
       editor.update(() => {
         const ph = placeholderKey ? $getNodeByKey(placeholderKey) : null
-        if (ph) ph.remove()
+        if ($isLoadingPlaceholderNode(ph) && ph.__requestId === requestId && ph.__sourceUrl === url) {
+          ph.replace($createParagraphNode().append($createLinkNode(url).append($createTextNode(url))))
+        }
       }, { tag: "history-merge" })
     }
   }, [editor, hoverState, replaceLink, snapshotAndFocusLink, dismiss])
@@ -304,9 +309,10 @@ export function LinkClickPlugin(): JSX.Element | null {
 
     snapshotAndFocusLink(linkNodeKey)
 
+    const requestId = crypto.randomUUID()
     let placeholderKey: string | undefined
     editor.update(() => {
-      const placeholder = $createLoadingPlaceholderNode("Creating bookmark…")
+      const placeholder = $createLoadingPlaceholderNode("Creating bookmark…", url, requestId)
       replaceLink(linkNodeKey, placeholder)
       placeholderKey = placeholder.getKey()
     }, { tag: HISTORY_PUSH_TAG })
@@ -317,7 +323,7 @@ export function LinkClickPlugin(): JSX.Element | null {
       const meta = await window.lychee.invoke("url.fetchMetadata", { url })
       editor.update(() => {
         const ph = placeholderKey ? $getNodeByKey(placeholderKey) : null
-        if (!ph) return
+        if (!$isLoadingPlaceholderNode(ph) || ph.__requestId !== requestId || ph.__sourceUrl !== url) return
         const bm = $createBookmarkNode({
           url: meta.url,
           title: meta.title,
@@ -334,7 +340,9 @@ export function LinkClickPlugin(): JSX.Element | null {
       console.error("Failed to create bookmark:", err)
       editor.update(() => {
         const ph = placeholderKey ? $getNodeByKey(placeholderKey) : null
-        if (ph) ph.remove()
+        if ($isLoadingPlaceholderNode(ph) && ph.__requestId === requestId && ph.__sourceUrl === url) {
+          ph.replace($createParagraphNode().append($createLinkNode(url).append($createTextNode(url))))
+        }
       }, { tag: "history-merge" })
     }
   }, [editor, hoverState, replaceLink, snapshotAndFocusLink, dismiss])
