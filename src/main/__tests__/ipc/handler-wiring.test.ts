@@ -69,19 +69,31 @@ describe('IPC Handler Wiring', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
+  });
+
+  it('rejects untrusted callers before reading or mutating any repository', async () => {
+    registerIpcHandlers(() => false);
+    for (const handler of handlers.values()) {
+      await expect(handler({}, {})).rejects.toThrow('Untrusted IPC sender');
+    }
+    expect(docs.createDocument).not.toHaveBeenCalled();
+    expect(docs.listDocuments).not.toHaveBeenCalled();
+    expect(images.saveImage).not.toHaveBeenCalled();
+    expect(shell.openExternal).not.toHaveBeenCalled();
   });
 
   // If a channel is missing, the renderer's invoke() call would hang forever
   // with no response. This is the most basic check.
-  it('registers exactly 17 channels', () => {
-    expect(handlers.size).toBe(20);
+  it('registers exactly 21 channels', () => {
+    expect(handlers.size).toBe(21);
   });
 
   // Verify every expected channel name exists. A typo in a channel name
   // would silently break that feature with no error at startup.
   it('registers all expected channel names', () => {
     const expectedChannels = [
+      'save.startSession',
       'documents.list',
       'documents.get',
       'documents.create',
@@ -107,6 +119,20 @@ describe('IPC Handler Wiring', () => {
     for (const channel of expectedChannels) {
       expect(handlers.has(channel), `Missing channel: ${channel}`).toBe(true);
     }
+  });
+
+  it('retires the old renderer session on reload and accepts the new revision one', async () => {
+    const event = { sender: { id: 101 } };
+    const old = crypto.randomUUID(), fresh = crypto.randomUUID();
+    const start = handlers.get('save.startSession')!;
+    const update = handlers.get('documents.update')!;
+    await start(event, { session: old });
+    await update(event, { id: '1', title: 'old', saveField: 'title', saveRevision: 9, saveSession: old });
+    await start(event, { session: fresh });
+    await update(event, { id: '1', title: 'new', saveField: 'title', saveRevision: 1, saveSession: fresh });
+    const calls = vi.mocked(docs.updateDocument).mock.calls.length;
+    await expect(update(event, { id: '1', title: 'stale', saveField: 'title', saveRevision: 10, saveSession: old })).rejects.toThrow('Stale save session');
+    expect(docs.updateDocument).toHaveBeenCalledTimes(calls);
   });
 
   // ────────────────────────────────────────────────────────

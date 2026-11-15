@@ -1,7 +1,10 @@
 import path from 'path';
+import { pathToFileURL } from 'url';
+import { isTrustedIpcSender, resolveImageRequest } from './main/trust-boundary';
 import {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   type MenuItemConstructorOptions,
   nativeTheme,
@@ -10,11 +13,13 @@ import {
 } from 'electron';
 import { closeDatabase, initDatabase } from './main/db';
 import { registerIpcHandlers } from './main/ipc';
+import { coordinateQuit } from './main/quit-save';
+import { endSaveSession } from './main/save-revision';
 import { getSetting } from './main/repos/settings';
 
 // Register custom protocol for serving local image files
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'lychee-image', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true } },
+  { scheme: 'lychee-image', privileges: { stream: true, supportFetchAPI: true } },
 ]);
 
 // Used for Linux/Windows window chrome; macOS reads the icon from the bundle's .icns.
@@ -147,6 +152,29 @@ const createWindow = (): BrowserWindow => {
     mainWindow.show();
   });
 
+  const senderId = mainWindow.webContents.id;
+  mainWindow.webContents.once('destroyed', () => endSaveSession(senderId));
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.split('#')[0] !== MAIN_WINDOW_WEBPACK_ENTRY.split('#')[0]) event.preventDefault();
+  });
+
+  let closingAfterSave = false;
+  mainWindow.on('close', (event) => {
+    if (quitConfirmed || closingAfterSave) return;
+    event.preventDefault();
+    if (savingWindows.has(mainWindow)) return;
+    savingWindows.add(mainWindow);
+    void flushWindow(mainWindow).then((result) => {
+      if (result.ok === false) {
+        dialog.showErrorBox('Could not save notes', result.reason);
+        return;
+      }
+      closingAfterSave = true;
+      if (!mainWindow.isDestroyed()) mainWindow.close();
+    }).finally(() => savingWindows.delete(mainWindow));
+  });
+
   // and load the index.html of the app.
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
@@ -161,10 +189,9 @@ app.whenReady().then(() => {
 
   // Handle lychee-image:// protocol — serves files from userData/images/
   protocol.handle('lychee-image', (request) => {
-    // URL format: lychee-image://image/<filename>
-    const filePath = decodeURIComponent(request.url.replace('lychee-image://image/', ''));
-    const fullPath = path.join(app.getPath('userData'), 'images', filePath);
-    return net.fetch(`file://${fullPath}`);
+    const fullPath = resolveImageRequest(request.url, path.join(app.getPath('userData'), 'images'));
+    if (!fullPath) return new Response('Not found', { status: 404 });
+    return net.fetch(pathToFileURL(fullPath).href);
   });
 
   const { dbPath } = initDatabase();
@@ -173,7 +200,7 @@ app.whenReady().then(() => {
   // Must register IPC handlers before createWindow loads the renderer URL —
   // the renderer can fire IPC during early hydration (e.g. theme/settings)
   // and would otherwise hit "No handler registered" if the window is created first.
-  registerIpcHandlers();
+  registerIpcHandlers((event) => isTrustedIpcSender(event, MAIN_WINDOW_WEBPACK_ENTRY, BrowserWindow.getAllWindows()));
   createWindow();
 });
 
@@ -194,8 +221,52 @@ app.on('activate', () => {
   }
 });
 
-app.on('before-quit', () => {
-  closeDatabase();
+let quitConfirmed = false;
+
+const savingWindows = new WeakSet<BrowserWindow>();
+let quitInProgress = false;
+
+async function flushWindow(win: BrowserWindow): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      win.webContents.executeJavaScript('window.__lycheeFlushSaves ? window.__lycheeFlushSaves() : { ok: false, reason: "Editor is not ready to save" }', true),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Saving timed out')), 10_000); }),
+    ]);
+    if (!result || typeof result !== 'object' || result.ok !== true) {
+      return { ok: false, reason: typeof result?.reason === 'string' ? result.reason : 'Save did not confirm completion' };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+async function flushOpenWindows() {
+  return Promise.all(BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed()).map(flushWindow));
+}
+
+app.on('before-quit', (event) => {
+  if (quitConfirmed) {
+    closeDatabase();
+    return;
+  }
+  event.preventDefault();
+  if (quitInProgress) return;
+  quitInProgress = true;
+  void coordinateQuit({
+    flushWindows: flushOpenWindows,
+    closeDatabase: () => {
+      quitConfirmed = true;
+      closeDatabase();
+    },
+    quit: () => {
+      app.quit();
+    },
+    onFailure: (reason) => {
+      dialog.showErrorBox('Could not save notes', reason);
+    },
+  }).finally(() => { quitInProgress = false; });
 });
 
 // In this file you can include the rest of your app's specific main process

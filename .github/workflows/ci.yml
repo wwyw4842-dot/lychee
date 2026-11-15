@@ -80,7 +80,7 @@ jobs:
             specs: e2e/editor.spec.ts e2e/title-typing.spec.ts
             workers: 1
           - name: media
-            specs: e2e/image-bookmark-embed.spec.ts e2e/trash.spec.ts e2e/persistence.spec.ts
+            specs: e2e/image-bookmark-embed.spec.ts e2e/trash.spec.ts e2e/persistence.spec.ts e2e/quit-save.spec.ts
             workers: 1
           - name: search-palette
             specs: e2e/search-palette.spec.ts

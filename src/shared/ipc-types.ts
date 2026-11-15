@@ -19,6 +19,10 @@ export type UrlMetadataResult = {
 // ── IPC contract ─────────────────────────────────────────────────────
 
 export type IpcContract = {
+  'save.startSession': {
+    req: { session: string };
+    res: { ok: true };
+  };
   'documents.list': {
     req: { limit?: number; offset?: number };
     res: { documents: DocumentRow[] };
@@ -44,6 +48,9 @@ export type IpcContract = {
       parentId?: string | null;
       emoji?: string | null;
       metadata?: Partial<NoteMetadata>;
+      saveRevision?: number;
+      saveSession?: string;
+      saveField?: 'content' | 'title';
     };
     res: { document: DocumentRow };
   };

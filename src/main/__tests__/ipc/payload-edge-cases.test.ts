@@ -83,7 +83,7 @@ describe('IPC Payload Edge Cases', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ────────────────────────────────────────────────────────
@@ -1268,7 +1268,7 @@ describe('Complex JSON Payload Edge Cases', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ── Realistic Lexical Document Structures ──────────────────
@@ -1956,7 +1956,7 @@ describe('Payload Type Validation — Wrong Types & Missing Fields', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ── documents.list — limit/offset type coercion ─────────────
@@ -2391,7 +2391,7 @@ describe('Null vs Undefined Distinction', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ── documents.create — parentId ─────────────────────────────
@@ -2573,7 +2573,7 @@ describe('Handler Argument Order Verification', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ── images.save: (data, mimeType) — 2 positional args ──────

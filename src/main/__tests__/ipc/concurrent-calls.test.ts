@@ -84,7 +84,7 @@ describe('IPC Concurrent & Rapid-Fire Calls', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
   });
 
   // ────────────────────────────────────────────────────────
@@ -894,9 +894,9 @@ describe('IPC Concurrent & Rapid-Fire Calls', () => {
   // ────────────────────────────────────────────────────────
 
   it('calling registerIpcHandlers twice overwrites handlers (no duplicates)', () => {
-    expect(handlers.size).toBe(20);
-    registerIpcHandlers();
-    expect(handlers.size).toBe(20);
+    expect(handlers.size).toBe(21);
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
+    expect(handlers.size).toBe(21);
   });
 
   // ────────────────────────────────────────────────────────
