@@ -69,7 +69,18 @@ describe('IPC Handler Wiring', () => {
   beforeEach(() => {
     handlers.clear();
     vi.clearAllMocks();
-    registerIpcHandlers();
+    registerIpcHandlers(() => true); // These repository tests use a trusted synthetic sender.
+  });
+
+  it('rejects untrusted callers before reading or mutating any repository', async () => {
+    registerIpcHandlers(() => false);
+    for (const handler of handlers.values()) {
+      await expect(handler({}, {})).rejects.toThrow('Untrusted IPC sender');
+    }
+    expect(docs.createDocument).not.toHaveBeenCalled();
+    expect(docs.listDocuments).not.toHaveBeenCalled();
+    expect(images.saveImage).not.toHaveBeenCalled();
+    expect(shell.openExternal).not.toHaveBeenCalled();
   });
 
   // If a channel is missing, the renderer's invoke() call would hang forever
