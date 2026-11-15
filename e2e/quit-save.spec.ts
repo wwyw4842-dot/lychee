@@ -111,3 +111,57 @@ test('renderer reload starts a fresh save session and persists its first edit', 
     expect((await listDocumentsFromDb(page))[0].title).toBe('After reload');
   });
 });
+
+test('a closed tab retains its failed write and retries after database recovery', async () => {
+  const executablePath = findPackagedBinary();
+  expect(executablePath).toBeTruthy();
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'lychee-save-recovery-'));
+  const launch = () => _electron.launch({ executablePath: executablePath!, args: [`--user-data-dir=${userData}`, ...(process.env.CI ? ['--no-sandbox'] : [])], env: { ...process.env, NODE_ENV: 'test' } });
+  const { DatabaseSync } = await import('node:sqlite');
+  let app: ElectronApplication | undefined;
+  let database: InstanceType<typeof DatabaseSync> | undefined;
+  try {
+    app = await launch();
+    let page = await app.firstWindow();
+    await page.waitForSelector('aside[data-state]');
+    await page.locator('[aria-label="New note"]').click();
+    await page.locator('h1.editor-title:visible').fill('Recovery note');
+    await page.evaluate(() => (window as any).__lycheeFlushSaves());
+    database = new DatabaseSync(path.join(userData, 'lychee.sqlite3'));
+    database.exec("CREATE TRIGGER reject_content BEFORE UPDATE OF content ON documents BEGIN SELECT RAISE(ABORT, 'test write unavailable'); END");
+    await page.locator('h1.editor-title:visible').evaluate(element => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('closed tab draft 雪');
+    await expect(page.locator('h1.editor-title:visible')).toHaveText('Recovery note');
+    await page.locator('[data-tab-id]').first().locator('[aria-label="Close tab"]').click({ force: true });
+    await expect(page.locator('[data-tab-id]')).toHaveCount(0);
+    const failed = await page.evaluate(() => (window as any).__lycheeFlushSaves());
+    expect(failed.ok).toBe(false);
+    expect(failed.reason).toContain('test write unavailable');
+    expect((await listDocumentsFromDb(page))[0].content).not.toContain('closed tab draft 雪');
+    database.exec('DROP TRIGGER reject_content');
+    database.close(); database = undefined;
+    expect(await page.evaluate(() => (window as any).__lycheeFlushSaves())).toEqual({ ok: true });
+    const closed = app.waitForEvent('close');
+    await app.evaluate(({ app }) => app.quit());
+    await closed;
+    app = await launch();
+    page = await app.firstWindow();
+    await page.waitForSelector('aside[data-state]');
+    const [document] = await listDocumentsFromDb(page);
+    expect(document.title).toBe('Recovery note');
+    expect(document.content).toContain('closed tab draft 雪');
+  } finally {
+    database?.close();
+    await app?.evaluate(({ app }) => app.exit()).catch(() => {});
+    await app?.close().catch(() => {});
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+});
