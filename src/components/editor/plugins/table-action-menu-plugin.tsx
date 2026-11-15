@@ -34,6 +34,7 @@ import {
   TableCellHeaderStates,
   TableCellNode,
 } from "@lexical/table"
+import { $handleTableTab } from "./table-tab"
 import {
   ArrowUp,
   ArrowDown,
@@ -309,30 +310,12 @@ export function TableActionMenuPlugin(): React.ReactElement | null {
     })
   }, [editor])
 
-  // Tab on the last cell of the last row creates a new row.
-  // Lexical's built-in hasTabHandler only calls parentTable.selectNext() at the end;
-  // we intercept at CRITICAL priority to insert a row instead.
+  // Lexical only moves the cell when the caret is collapsed. A selected
+  // range otherwise falls through and the Tab key deletes that text.
   useEffect(() => {
     return editor.registerCommand(
       KEY_TAB_COMMAND,
-      (event) => {
-        if (event.shiftKey) return false
-        const selection = $getSelection()
-        if (!$isRangeSelection(selection)) return false
-        const cell = $findCellNode(selection.anchor.getNode())
-        if (!cell) return false
-        // Only handle the very last cell in the last row
-        if (cell.getNextSibling() !== null) return false
-        const row = cell.getParent()
-        if (!row || row.getNextSibling() !== null) return false
-        event.preventDefault()
-        const newRow = $insertTableRowAtSelection(true)
-        if (newRow) {
-          const firstCell = newRow.getFirstChild()
-          if ($isTableCellNode(firstCell)) firstCell.selectStart()
-        }
-        return true
-      },
+      (event) => $handleTableTab(event),
       COMMAND_PRIORITY_CRITICAL,
     )
   }, [editor])

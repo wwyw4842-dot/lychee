@@ -13,6 +13,19 @@ import { setupDb, getDb, insertDoc, getAllDocsForParent, getSortOrders, getDocum
 describe('Document Repository — Update Edge Cases', () => {
   setupDb();
 
+  it('preserves exact legacy JSON before migration and rolls back if backup fails', () => {
+    const legacy = JSON.stringify({ root: { children: [{ type: 'code-snippet', code: ' a\\n\\t雪' }] } });
+    const doc = createDocument({ title: 'Legacy', content: legacy });
+    updateDocument(doc.id, { content: '{"root":{"children":[]}}' });
+    expect(getDb().prepare('SELECT content FROM document_content_backups WHERE documentId = ?').get(doc.id))
+      .toEqual({ content: legacy });
+    const blocked = createDocument({ title: 'Protected', content: legacy });
+    getDb().exec("CREATE TRIGGER reject_backup BEFORE INSERT ON document_content_backups BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+    expect(() => updateDocument(blocked.id, { content: 'replacement' })).toThrow('disk full');
+    expect(getDocumentById(blocked.id)?.content).toBe(legacy);
+  });
+
+
     // Empty patch — only updatedAt should change.
     // This is a valid operation (e.g., "touch" the document).
     // We use insertDoc with a past timestamp so the update's nowIso() will differ.

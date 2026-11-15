@@ -15,6 +15,8 @@ export type SerializedLoadingPlaceholderNode = Spread<
   {
     type: "loading-placeholder"
     label: string
+    sourceUrl?: string
+    requestId?: string
     version: 1
   },
   SerializedLexicalNode
@@ -39,18 +41,22 @@ function LoadingPlaceholderComponent({ nodeKey, label }: { nodeKey: NodeKey; lab
 
 export class LoadingPlaceholderNode extends DecoratorNode<ReactElement | null> {
   __label: string
+  __sourceUrl: string
+  __requestId: string
 
   static getType(): string {
     return "loading-placeholder"
   }
 
   static clone(node: LoadingPlaceholderNode): LoadingPlaceholderNode {
-    return new LoadingPlaceholderNode(node.__label, node.__key)
+    return new LoadingPlaceholderNode(node.__label, node.__key, node.__sourceUrl, node.__requestId)
   }
 
-  constructor(label: string = "Loading…", key?: NodeKey) {
+  constructor(label: string = "Loading…", key?: NodeKey, sourceUrl = "", requestId = "") {
     super(key)
     this.__label = label
+    this.__sourceUrl = sourceUrl
+    this.__requestId = requestId
   }
 
   createDOM(_config: EditorConfig): HTMLElement {
@@ -64,13 +70,15 @@ export class LoadingPlaceholderNode extends DecoratorNode<ReactElement | null> {
   }
 
   static importJSON(serializedNode: SerializedLoadingPlaceholderNode): LoadingPlaceholderNode {
-    return $createLoadingPlaceholderNode(serializedNode.label)
+    return $createLoadingPlaceholderNode(serializedNode.label, serializedNode.sourceUrl, serializedNode.requestId)
   }
 
   exportJSON(): SerializedLoadingPlaceholderNode {
     return {
       type: "loading-placeholder",
       label: this.__label,
+      sourceUrl: this.__sourceUrl,
+      requestId: this.__requestId,
       version: 1,
     }
   }
@@ -90,8 +98,8 @@ export class LoadingPlaceholderNode extends DecoratorNode<ReactElement | null> {
   }
 }
 
-export function $createLoadingPlaceholderNode(label: string = "Loading…"): LoadingPlaceholderNode {
-  return $applyNodeReplacement(new LoadingPlaceholderNode(label))
+export function $createLoadingPlaceholderNode(label: string = "Loading…", sourceUrl = "", requestId = ""): LoadingPlaceholderNode {
+  return $applyNodeReplacement(new LoadingPlaceholderNode(label, undefined, sourceUrl, requestId))
 }
 
 export function $isLoadingPlaceholderNode(

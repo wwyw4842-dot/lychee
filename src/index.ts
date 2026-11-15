@@ -1,4 +1,6 @@
 import path from 'path';
+import { pathToFileURL } from 'url';
+import { isTrustedIpcSender, resolveImageRequest } from './main/trust-boundary';
 import {
   app,
   BrowserWindow,
@@ -17,7 +19,7 @@ import { getSetting } from './main/repos/settings';
 
 // Register custom protocol for serving local image files
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'lychee-image', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true } },
+  { scheme: 'lychee-image', privileges: { stream: true, supportFetchAPI: true } },
 ]);
 
 // Used for Linux/Windows window chrome; macOS reads the icon from the bundle's .icns.
@@ -152,6 +154,10 @@ const createWindow = (): BrowserWindow => {
 
   const senderId = mainWindow.webContents.id;
   mainWindow.webContents.once('destroyed', () => endSaveSession(senderId));
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.split('#')[0] !== MAIN_WINDOW_WEBPACK_ENTRY.split('#')[0]) event.preventDefault();
+  });
 
   let closingAfterSave = false;
   mainWindow.on('close', (event) => {
@@ -183,10 +189,9 @@ app.whenReady().then(() => {
 
   // Handle lychee-image:// protocol — serves files from userData/images/
   protocol.handle('lychee-image', (request) => {
-    // URL format: lychee-image://image/<filename>
-    const filePath = decodeURIComponent(request.url.replace('lychee-image://image/', ''));
-    const fullPath = path.join(app.getPath('userData'), 'images', filePath);
-    return net.fetch(`file://${fullPath}`);
+    const fullPath = resolveImageRequest(request.url, path.join(app.getPath('userData'), 'images'));
+    if (!fullPath) return new Response('Not found', { status: 404 });
+    return net.fetch(pathToFileURL(fullPath).href);
   });
 
   const { dbPath } = initDatabase();
@@ -195,7 +200,7 @@ app.whenReady().then(() => {
   // Must register IPC handlers before createWindow loads the renderer URL —
   // the renderer can fire IPC during early hydration (e.g. theme/settings)
   // and would otherwise hit "No handler registered" if the window is created first.
-  registerIpcHandlers();
+  registerIpcHandlers((event) => isTrustedIpcSender(event, MAIN_WINDOW_WEBPACK_ENTRY, BrowserWindow.getAllWindows()));
   createWindow();
 });
 

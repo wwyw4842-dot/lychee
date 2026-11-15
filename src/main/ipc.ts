@@ -23,8 +23,11 @@ type Handler<C extends IpcChannel> = (
   event: IpcMainInvokeEvent,
 ) => Promise<IpcContract[C]['res']> | IpcContract[C]['res'];
 
+let isTrustedSender: (event: IpcMainInvokeEvent) => boolean = () => false;
+
 function handle<C extends IpcChannel>(channel: C, fn: Handler<C>) {
   ipcMain.handle(channel, async (event, payload: IpcContract[C]['req']) => {
+    if (!isTrustedSender(event)) throw new Error('Untrusted IPC sender');
     return fn(payload, event);
   });
 }
@@ -45,7 +48,8 @@ function validateContentJson(content: string): void {
   }
 }
 
-export function registerIpcHandlers() {
+export function registerIpcHandlers(validateSender: (event: IpcMainInvokeEvent) => boolean = () => false) {
+  isTrustedSender = validateSender;
   handle("save.startSession", (payload, event) => {
     startSaveSession(event.sender.id, payload.session);
     return { ok: true };
