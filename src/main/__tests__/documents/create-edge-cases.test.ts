@@ -134,14 +134,11 @@ describe('Document Repository — Create Edge Cases', () => {
       expect(parsed.root.children[0].type).toBe('table');
     });
 
-    // Creating a doc with a parentId that doesn't exist in the DB.
-    // The code has no FK validation — it just inserts. This is by design
-    // (performance, simplicity) but we should verify the behavior.
-    it('creating with non-existent parentId succeeds (no FK enforcement)', () => {
-      const doc = createDocument({ parentId: 'nonexistent-parent' });
-      expect(doc.parentId).toBe('nonexistent-parent');
-      const retrieved = getDocumentById(doc.id)!;
-      expect(retrieved.parentId).toBe('nonexistent-parent');
+    it('creating with non-existent parentId is rejected', () => {
+      expect(() => createDocument({ parentId: 'nonexistent-parent' })).toThrow(
+        'Target parent not found: nonexistent-parent',
+      );
+      expect(getDb().prepare('SELECT COUNT(*) AS c FROM documents').get()).toEqual({ c: 0 });
     });
 
     // Each created doc should get a unique UUID.

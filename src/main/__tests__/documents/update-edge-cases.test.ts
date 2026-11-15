@@ -13,6 +13,19 @@ import { setupDb, getDb, insertDoc, getAllDocsForParent, getSortOrders, getDocum
 describe('Document Repository — Update Edge Cases', () => {
   setupDb();
 
+  it('preserves exact legacy JSON before migration and rolls back if backup fails', () => {
+    const legacy = JSON.stringify({ root: { children: [{ type: 'code-snippet', code: ' a\\n\\t雪' }] } });
+    const doc = createDocument({ title: 'Legacy', content: legacy });
+    updateDocument(doc.id, { content: '{"root":{"children":[]}}' });
+    expect(getDb().prepare('SELECT content FROM document_content_backups WHERE documentId = ?').get(doc.id))
+      .toEqual({ content: legacy });
+    const blocked = createDocument({ title: 'Protected', content: legacy });
+    getDb().exec("CREATE TRIGGER reject_backup BEFORE INSERT ON document_content_backups BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+    expect(() => updateDocument(blocked.id, { content: 'replacement' })).toThrow('disk full');
+    expect(getDocumentById(blocked.id)?.content).toBe(legacy);
+  });
+
+
     // Empty patch — only updatedAt should change.
     // This is a valid operation (e.g., "touch" the document).
     // We use insertDoc with a past timestamp so the update's nowIso() will differ.
@@ -194,33 +207,23 @@ describe('Document Repository — Update Edge Cases', () => {
       expect(uniqueOrders.size).not.toBe(newOrders.length); // BUG: duplicate sortOrders
     });
 
-    it('BUG: updateDocument with parentId allows circular reference', () => {
+    it('updateDocument rejects a parent that is already a descendant', () => {
       const parent = createDocument({ title: 'Parent' });
       const child = createDocument({ title: 'Child', parentId: parent.id });
 
-      // moveDocument would throw 'Cannot move document into its descendant'
-      // but updateDocument has no such check
-      expect(() => {
-        updateDocument(parent.id, { parentId: child.id });
-      }).not.toThrow(); // BUG: this should throw but doesn't
-
-      // Verify the circular reference was created
-      const parentDoc = getDocumentById(parent.id)!;
-      const childDoc = getDocumentById(child.id)!;
-      expect(parentDoc.parentId).toBe(child.id);
-      expect(childDoc.parentId).toBe(parent.id); // circular!
+      expect(() => updateDocument(parent.id, { parentId: child.id })).toThrow(
+        'Cannot move document into its descendant',
+      );
+      expect(getDocumentById(parent.id)!.parentId).toBeNull();
+      expect(getDocumentById(child.id)!.parentId).toBe(parent.id);
     });
 
-    it('BUG: updateDocument allows self-referencing parentId', () => {
+    it('updateDocument rejects a self parent', () => {
       const doc = createDocument({ title: 'Doc' });
 
-      // moveDocument would throw 'Cannot move document into itself'
-      // but updateDocument has no such check
-      expect(() => {
-        updateDocument(doc.id, { parentId: doc.id });
-      }).not.toThrow(); // BUG: this should throw but doesn't
-
-      const updated = getDocumentById(doc.id)!;
-      expect(updated.parentId).toBe(doc.id); // self-reference!
+      expect(() => updateDocument(doc.id, { parentId: doc.id })).toThrow(
+        'Cannot move document into itself',
+      );
+      expect(getDocumentById(doc.id)!.parentId).toBeNull();
     });
 });

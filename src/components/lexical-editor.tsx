@@ -1,6 +1,6 @@
 import * as React from "react";
 import debounce from "lodash/debounce";
-import { nextSaveRevision, isCurrentSaveRevision, registerSaveFlusher, saveSession, trackSave } from "@/renderer/save-flush";
+import { nextSaveRevision, isCurrentSaveRevision, registerSaveFlusher, saveSession, queueSave } from "@/renderer/save-flush";
 import { ChevronDown, ChevronUp, Search, Smile, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDocumentStore } from "@/renderer/document-store";
@@ -308,9 +308,6 @@ export function LexicalEditor({
     [removeEmoji],
   );
 
-  const contentInflight = React.useRef<Promise<unknown>>(Promise.resolve());
-  const titleInflight = React.useRef<Promise<unknown>>(Promise.resolve());
-
   const saveContent = React.useMemo(
     () =>
       debounce(
@@ -321,11 +318,8 @@ export function LexicalEditor({
           onSaved?: (doc: DocumentRow) => void,
         ) => {
           const json = editorState.toJSON();
-          json.root.children = (json.root as any).children.filter(
-            (child: any) => child.type !== "loading-placeholder",
-          );
           const content = JSON.stringify(json);
-          const pending = window.lychee
+          const pending = queueSave(id, "content", () => window.lychee
             .invoke("documents.update", { id, content, saveRevision, saveSession, saveField: "content" })
             .then(({ document: doc }) => {
               if (!isCurrentSaveRevision(id, "content", saveRevision)) return;
@@ -334,10 +328,8 @@ export function LexicalEditor({
                 updatedAt: doc.updatedAt,
               });
               onSaved?.(doc);
-            });
+            }));
           void pending.catch((err) => console.error("Save failed:", err));
-          trackSave(id, "content", pending);
-          contentInflight.current = pending;
           return pending;
         },
         600,
@@ -348,15 +340,13 @@ export function LexicalEditor({
   const saveTitle = React.useMemo(
     () =>
       debounce((id: string, newTitle: string, saveRevision: number) => {
-        const pending = window.lychee
+        const pending = queueSave(id, "title", () => window.lychee
           .invoke("documents.update", { id, title: newTitle, saveRevision, saveSession, saveField: "title" })
           .then(({ document: doc }) => {
             if (!isCurrentSaveRevision(id, "title", saveRevision)) return;
             updateDocumentInStore(doc.id, { title: doc.title });
-          });
+          }));
         void pending.catch((err) => console.error("Title save failed:", err));
-        trackSave(id, "title", pending);
-        titleInflight.current = pending;
         return pending;
       }, 500),
     [updateDocumentInStore],
@@ -372,12 +362,9 @@ export function LexicalEditor({
 
   React.useEffect(() => {
     return registerSaveFlusher(async () => {
-      await Promise.all([
-        Promise.resolve(saveContent.flush()),
-        Promise.resolve(saveTitle.flush()),
-        contentInflight.current,
-        titleInflight.current,
-      ]);
+      // queueSave owns in-flight completion and retry even after this tab unmounts.
+      saveContent.flush();
+      saveTitle.flush();
     });
   }, [saveContent, saveTitle]);
 

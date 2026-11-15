@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'vitest';
-import { flushAllSaves, registerSaveFlusher, resetSaveFlushers, trackSave, nextSaveRevision, isCurrentSaveRevision } from './save-flush';
+import { flushAllSaves, registerSaveFlusher, resetSaveFlushers, queueSave, nextSaveRevision, isCurrentSaveRevision, discardDocumentSaves } from './save-flush';
 
 beforeEach(() => resetSaveFlushers());
 
@@ -27,7 +27,7 @@ test('one tab failing keeps the flush unsuccessful', async () => {
 test('unmounted tabs keep their pending saves in the quit barrier', async () => {
   let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; });
-  trackSave('closed-tab', 'content', pending);
+  void queueSave('closed-tab', 'content', () => pending);
   const unregister = registerSaveFlusher(async () => {});
   unregister();
   let finished = false;
@@ -40,9 +40,9 @@ test('unmounted tabs keep their pending saves in the quit barrier', async () => 
 
 test('failed unmounted save blocks quit until a later save for that field succeeds', async () => {
   const rejected = Promise.reject(new Error('disk full'));
-  trackSave('doc', 'title', rejected);
+  void queueSave('doc', 'title', () => rejected);
   await expect(flushAllSaves()).resolves.toEqual({ ok: false, reason: 'disk full' });
-  trackSave('doc', 'title', Promise.resolve());
+  void queueSave('doc', 'title', async () => {});
   await expect(flushAllSaves()).resolves.toEqual({ ok: true });
 });
 
@@ -66,4 +66,32 @@ test('edits arriving during a slow save trigger another flush', async () => {
   release();
   await expect(result).resolves.toEqual({ ok: true });
   expect(calls).toBe(2);
+});
+
+
+test('closed-tab failed payload is retried unchanged after storage recovers', async () => {
+  const payload = { id: 'closed', content: 'exact unsaved 雪\r\n\t' };
+  const writes: typeof payload[] = [];
+  let available = false;
+  void queueSave(payload.id, 'content', async () => {
+    if (!available) throw new Error('disk full');
+    writes.push({ ...payload });
+  });
+  await expect(flushAllSaves()).resolves.toEqual({ ok: false, reason: 'disk full' });
+  available = true;
+  await expect(flushAllSaves()).resolves.toEqual({ ok: true });
+  expect(writes).toEqual([payload]);
+});
+
+
+test('only confirmed permanent deletion discards retries and late unmount saves', async () => {
+  let attempts = 0;
+  const write = async () => { attempts++; throw new Error('unavailable'); };
+  void queueSave('deleted', 'content', write);
+  await expect(flushAllSaves()).resolves.toMatchObject({ ok: false });
+  const before = attempts;
+  discardDocumentSaves(['deleted']);
+  await queueSave('deleted', 'content', write);
+  await expect(flushAllSaves()).resolves.toEqual({ ok: true });
+  expect(attempts).toBe(before);
 });
